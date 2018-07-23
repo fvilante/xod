@@ -335,6 +335,11 @@ export const getPatchByPathUnsafe = def(
     )
 );
 
+export const hasPatch = def(
+  'hasPatch :: PatchPath -> Project -> Boolean',
+  R.compose(Maybe.isJust, getPatchByPath)
+);
+
 /**
  * Returns a map of Pins for the passed Node.
  *
