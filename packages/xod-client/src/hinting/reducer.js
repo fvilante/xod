@@ -8,7 +8,7 @@ export default (state = initialState, action) => {
     case AT.UPDATE_DEDUCED_TYPES:
       return R.assoc('deducedTypes', action.payload, state);
     case AT.UPDATE_ERRORS:
-      return R.assoc('errors', action.payload, state.errors);
+      return R.assoc('errors', action.payload, state);
     default:
       return state;
   }
