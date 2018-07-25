@@ -36,7 +36,7 @@ export default store => next => action => {
   } else if (willUpdateDeducedTypes) {
     next(updateDeducedTypes(nextDeducedTypes));
   } else if (willUpdateErrors) {
-    next(updateErrors(nextDeducedTypes));
+    next(updateErrors(nextErrors));
   }
 
   return act;

@@ -12,6 +12,11 @@ export default {
           PinKey: PinType,
         },
       },
+      links: {
+        LinksId: {
+          errors: [Error],
+        }
+      },
     },
     **/
   },

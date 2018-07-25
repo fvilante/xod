@@ -54,6 +54,7 @@ export const deducePinTypesForProject = R.curry(
     }
 
     return R.compose(
+      R.reject(R.isEmpty),
       foldMaybe(deducedTypes, newDeducedTypesForPatch =>
         R.compose(
           R.assoc(R.__, newDeducedTypesForPatch, deducedTypes),

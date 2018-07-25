@@ -26,6 +26,12 @@ import { getActingPatchPath } from './utils';
 //
 // =============================================================================
 
+// :: Node -> Boolean
+const isNodeTerminalOrSelf = R.compose(
+  R.either(XP.isTerminalPatchPath, XP.isTerminalSelf),
+  XP.getNodeType
+);
+
 // A map of functions, that accepts new project and action
 // to check shall we need to run any validations on this changes
 // Indexed by ActionTypes
@@ -40,13 +46,7 @@ const predicates = {
     const patchPath = action.payload.patchPath;
 
     return R.compose(
-      foldMaybe(
-        true,
-        R.compose(
-          R.any(R.either(XP.isTerminalPatchPath, XP.isTerminalSelf)),
-          R.map(XP.getNodeType)
-        )
-      ),
+      foldMaybe(true, R.any(isNodeTerminalOrSelf)),
       R.chain(
         R.pipe(
           patch => R.map(XP.getNodeById(R.__, patch), nodeIds),
@@ -56,7 +56,25 @@ const predicates = {
       XP.getPatchByPath(patchPath)
     )(project);
   },
-  [PAT.NODE_UPDATE_PROPERTY]: action => action.payload.key !== 'label',
+  [PAT.NODE_UPDATE_PROPERTY]: (action, project) => {
+    const nodeId = action.payload.id;
+    const patchPath = action.payload.patchPath;
+    const key = action.payload.key;
+
+    return R.compose(
+      foldMaybe(
+        true, // Very strange behaviour — let's validate
+        R.either(
+          // If changed label — do not validate
+          () => key !== 'label',
+          // But if it's terminal or self Node — validate
+          isNodeTerminalOrSelf
+        )
+      ),
+      R.chain(XP.getNodeById(nodeId)),
+      XP.getPatchByPath
+    )(patchPath, project);
+  },
 };
 
 // A map of short-circuit validations
@@ -157,29 +175,21 @@ const getPinErrors = R.curry((project, patch, node) =>
 // :: Project -> Patch -> Map NodeId NodeErrors
 const getNodeErrors = R.curry((project, patch) =>
   R.compose(
-    R.reject(
-      R.both(
-        R.pipe(R.prop('errors'), R.isEmpty),
-        R.pipe(R.prop('pins'), R.isEmpty)
-      )
-    ),
+    R.map(R.merge({ errors: [], pins: {} })),
     // :: Map NodeId NodeErrors
     nodeErrorsMap =>
       R.compose(
-        R.map(
-          R.compose(
-            R.mergeAll,
-            R.append(R.__, [{ errors: [], pins: {} }, nodeErrorsMap]),
-            R.objOf('pins')
-          )
-        ),
+        R.merge(nodeErrorsMap),
+        // :: Map NodeId { pins: Map PinKey PinErrors }
+        R.map(R.objOf('pins')),
         R.reject(R.isEmpty),
         R.map(getPinErrors(project, patch)),
         R.indexBy(XP.getNodeId),
         XP.listNodes
       )(patch),
-    // :: Map NodeId { errors: [Error] }
+    // :: Map NodeId { errors: [Error], pins: {} }
     R.map(R.objOf('errors')),
+    R.reject(R.isEmpty),
     // :: Map NodeId [Error]
     () =>
       mergeAllWithConcat([
