@@ -56,3 +56,11 @@ export const uniqLists = def(
     []
   )
 );
+
+/**
+ * Concatenates list of lists into one list
+ */
+export const concatLists = def(
+  'concatLists :: [[a]] -> [a]',
+  R.reduce(R.concat, [])
+);

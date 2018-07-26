@@ -8,6 +8,7 @@ import {
   mergeAllWithConcat,
   catMaybies,
   failOnNothing,
+  concatLists,
 } from 'xod-func-tools';
 
 import * as PAT from '../project/actionTypes';
@@ -181,7 +182,7 @@ const getDeadRefErrorMap = (patch, project) =>
   )(patch);
 
 // :: Patch -> Project -> Node -> Map PinKey PinErrors
-const getPinErrors = R.curry((patch, project, node) =>
+const validateBoundValues = R.curry((patch, project, node) =>
   R.compose(
     R.map(
       R.compose(
@@ -193,7 +194,10 @@ const getPinErrors = R.curry((patch, project, node) =>
   )(project, patch, node)
 );
 
-const validateNodes = R.curry((validators, patch, project) =>
+// PinValidateFn :: Patch -> Project -> Map PinKey PinErrors
+// NodeValidateFn :: Patch -> Project -> Map NodeId [Error]
+// :: [NodeValidateFn] -> Patch -> Project -> Map NodeId NodeErrors
+const validateNodes = R.curry((nodeValidators, pinValidators, patch, project) =>
   R.compose(
     R.map(R.merge({ errors: [], pins: {} })),
     // :: Map NodeId NodeErrors
@@ -203,7 +207,11 @@ const validateNodes = R.curry((validators, patch, project) =>
         // :: Map NodeId { pins: Map PinKey PinErrors }
         R.map(R.objOf('pins')),
         R.reject(R.isEmpty),
-        R.map(getPinErrors(patch, project)),
+        R.map(node =>
+          R.compose(mergeAllWithConcat, R.map(fn => fn(patch, project, node)))(
+            pinValidators
+          )
+        ),
         R.indexBy(XP.getNodeId),
         XP.listNodes
       )(patch),
@@ -213,47 +221,64 @@ const validateNodes = R.curry((validators, patch, project) =>
     // :: Map NodeId [Error]
     mergeAllWithConcat,
     R.map(fn => fn(patch, project))
-  )(validators)
+  )(nodeValidators)
 );
 
-// :: Patch -> Project -> Map NodeId NodeErrors
-const getNodeErrors = validateNodes([
-  getDeadRefErrorMap,
-  getTerminalsErrorMap,
-  getVariadicMarkersErrorMap,
-  getAbstractMarkersErrorMap,
-  getConstructorMarkersErrorMap,
-]);
+// LinkValidateFn :: Link -> Patch -> Project -> Map PatchPath DeducedPinTypes -> [Error]
+// :: [LinkValidateFn] -> Patch -> Project -> Map PatchPath DeducedPinTypes -> Map LinkId LinkErrors
+const validateLinks = R.curry(
+  (validators, patch, project, allDeducedPinTypes) =>
+    R.compose(
+      R.map(R.objOf('errors')),
+      R.reject(R.isEmpty),
+      R.map(link =>
+        R.compose(
+          concatLists,
+          R.map(fn => fn(link, patch, project, allDeducedPinTypes))
+        )(validators)
+      ),
+      R.indexBy(XP.getLinkId),
+      XP.listLinks
+    )(patch)
+);
 
-// :: Patch -> Project -> Map PatchPath DeducedPinTypes -> Map LinkId LinkErrors
-const getLinkErrors = R.curry((patch, project, allDeducedPinTypes) =>
+// :: Link -> Patch -> Project -> Map PatchPath DeducedPinTypes -> [Error]
+const validateLinkPins = R.curry((link, patch, project, allDeducedPinTypes) =>
   R.compose(
-    R.map(R.objOf('errors')),
-    R.reject(R.isEmpty),
-    R.map(
-      R.compose(
-        foldEither(R.of, R.always([])),
-        XP.validateLinkPins(
-          R.__,
-          patch,
-          project,
-          R.propOr({}, XP.getPatchPath(patch), allDeducedPinTypes)
-        )
-      )
-    ),
-    R.indexBy(XP.getLinkId),
-    XP.listLinks
-  )(patch)
+    foldEither(R.of, R.always([])),
+    XP.validateLinkPins(link, patch, project),
+    R.propOr({}, XP.getPatchPath(patch))
+  )(allDeducedPinTypes)
 );
 
-// :: Patch -> Project -> { nodes: NodeErrors }
-const getNodeErrorsForPatch = R.compose(R.objOf('nodes'), getNodeErrors);
-// :: Patch -> Project -> Map PatchPath DeducedPinTypes -> { nodes: NodeErrors }
-const getLinkErrorsForPatch = R.compose(R.objOf('links'), getLinkErrors);
+// :: [NodeValidateFn] -> [PinValidateFn] -> Patch -> Project -> { nodes: NodeErrors }
+const getNodeErrors = R.curry((nodeValidators, pinValidators, patch, project) =>
+  R.compose(R.objOf('nodes'), validateNodes(nodeValidators, pinValidators))(
+    patch,
+    project
+  )
+);
+// :: [LinkValidateFn] -> Patch -> Project -> Map PatchPath DeducedPinTypes -> { nodes: NodeErrors }
+const getLinkErrors = R.curry(
+  (linkValidators, patch, project, allDeducedPinTypes) =>
+    R.compose(R.objOf('links'), validateLinks(linkValidators))(
+      patch,
+      project,
+      allDeducedPinTypes
+    )
+);
 
-// :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> [Patch] -> Map PatchPath (Maybe PatchErrors)
+// :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] -> Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> [Patch] -> Map PatchPath (Maybe PatchErrors)
 const validatePatches = R.curry(
-  (project, allDeducedPinTypes, changedPatchPath, patches) =>
+  (
+    nodeValidators,
+    pinValidators,
+    linkValidators,
+    project,
+    allDeducedPinTypes,
+    changedPatchPath,
+    patches
+  ) =>
     R.compose(
       R.map(
         R.ifElse(
@@ -269,8 +294,8 @@ const validatePatches = R.curry(
       R.map(patch =>
         R.mergeAll([
           { errors: [], nodes: {}, links: {} },
-          getLinkErrorsForPatch(patch, project, allDeducedPinTypes),
-          getNodeErrorsForPatch(patch, project),
+          getLinkErrors(linkValidators, patch, project, allDeducedPinTypes),
+          getNodeErrors(nodeValidators, pinValidators, patch, project),
         ])
       ),
       indexedPatches =>
@@ -287,17 +312,30 @@ const validatePatches = R.curry(
     )(patches)
 );
 
+// :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> [Patch] -> Map PatchPath (Maybe PatchErrors)
+const validatePatchesGenerally = validatePatches(
+  [
+    getDeadRefErrorMap,
+    getTerminalsErrorMap,
+    getVariadicMarkersErrorMap,
+    getAbstractMarkersErrorMap,
+    getConstructorMarkersErrorMap,
+  ],
+  [validateBoundValues],
+  [validateLinkPins]
+);
+
 // :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> Map PatchPath (Maybe PatchErrors)
 const validateLocalPatches = (project, allDeducedPinTypes, changedPatchPath) =>
   R.compose(
-    validatePatches(project, allDeducedPinTypes, changedPatchPath),
+    validatePatchesGenerally(project, allDeducedPinTypes, changedPatchPath),
     XP.listLocalPatches
   )(project);
 
 // :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> Map PatchPath (Maybe PatchErrors)
 const validateAllPatches = (project, allDeducedPinTypes, changedPatchPath) =>
   R.compose(
-    validatePatches(project, allDeducedPinTypes, changedPatchPath),
+    validatePatchesGenerally(project, allDeducedPinTypes, changedPatchPath),
     XP.listPatches
   )(project);
 
@@ -315,7 +353,7 @@ const generalValidator = (action, project, allDeducedPinTypes) => {
               ? validateLocalPatches(project, allDeducedPinTypes, patchPath)
               : validateAllPatches(project, allDeducedPinTypes, patchPath)
         ),
-        validatePatches(project, allDeducedPinTypes, null),
+        validatePatchesGenerally(project, allDeducedPinTypes, null),
         R.of
       ),
       XP.getPatchByPathUnsafe
