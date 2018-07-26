@@ -73,6 +73,7 @@ export {
   sameCategoryMarkers,
   sameDeducedTypes,
   samePatchValidity,
+  hasNodeWithType,
 } from './patch';
 export {
   getFilename as getAttachmentFilename,

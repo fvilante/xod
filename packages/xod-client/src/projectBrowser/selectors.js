@@ -46,8 +46,16 @@ const markDeprecatedPatches = patch =>
 const markUtilityPatches = patch =>
   R.assoc('isUtility', XP.isUtilityPatch(patch), patch);
 
+const getPatchPaths = R.pipe(R.indexBy(XP.getPatchPath), R.keys);
 // :: [Patch] -> [Patch] -> Boolean
-const samePatchPaths = R.pipe(R.differenceWith(XP.getPatchPath), notEmpty);
+const samePatchPaths = R.useWith(
+  R.equals,
+  [
+    getPatchPaths,
+    getPatchPaths,
+  ]
+);
+//R.pipe(R.differenceWith(XP.getPatchPath), notEmpty);
 
 const getLocalPatchesList = createSelector(
   ProjectSelectors.getProject,
