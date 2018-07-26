@@ -158,7 +158,7 @@ const addError = R.curry((error, renderableEntity) =>
 );
 
 // :: PatchErrors -> RenderableNode -> RenderableNode
-const addErrors = R.curry((patchPath, errors, renderableNode) =>
+const addNodeErrors = R.curry((patchPath, errors, renderableNode) =>
   R.compose(
     R.reduce(R.flip(addError), renderableNode),
     getNodeErrors(patchPath, renderableNode.id, renderableNode.type)
@@ -264,7 +264,7 @@ export const getRenderableNode = R.curry(
       markDeprecatedNodes(project),
       addPinErrors(curPatchPath, errors),
       addVariadicProps(project),
-      addErrors(curPatchPath, errors),
+      addNodeErrors(curPatchPath, errors),
       addNodePositioning,
       assocPinIsConnected(connectedPins),
       assocNodeIdToPins,

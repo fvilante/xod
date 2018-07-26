@@ -7,6 +7,7 @@ import {
   explodeMaybe,
   mergeAllWithConcat,
   notEmpty,
+  failOnNothing,
 } from 'xod-func-tools';
 
 import * as PAT from '../project/actionTypes';
@@ -159,6 +160,29 @@ const getTerminalsErrorMap = R.compose(
   XP.validatePinLabels
 );
 
+// TODO: Use validator from xod-project after refactoring
+// :: Project -> Patch -> Map NodeId [Error]
+const getDeadRefErrorMap = (project, patch) =>
+  R.compose(
+    R.reject(R.isEmpty),
+    R.map(
+      R.compose(
+        foldEither(R.of, R.always([])),
+        nodeType => {
+          const patchPath = XP.getPatchPath(patch);
+          return failOnNothing('DEAD_REFERENCE__PATCH_FOR_NODE_NOT_FOUND', {
+            nodeType,
+            patchPath,
+            trace: [patchPath],
+          })(XP.getPatchByPath(nodeType, project));
+        },
+        XP.getNodeType
+      )
+    ),
+    R.indexBy(XP.getNodeId),
+    XP.listNodes
+  )(patch);
+
 // :: Project -> Patch -> Node -> Map PinKey PinErrors
 const getPinErrors = R.curry((project, patch, node) =>
   R.compose(
@@ -193,6 +217,7 @@ const getNodeErrors = R.curry((project, patch) =>
     // :: Map NodeId [Error]
     () =>
       mergeAllWithConcat([
+        getDeadRefErrorMap(project, patch),
         getTerminalsErrorMap(patch),
         getVariadicMarkersErrorMap(patch),
         getAbstractMarkersErrorMap(patch),
