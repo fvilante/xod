@@ -96,6 +96,7 @@ export {
   normalizeEmptyPinLabels,
   isPinBindable,
   isPulsePin,
+  isGenericPin,
 } from './pin';
 export * from './link';
 export * from './constants';

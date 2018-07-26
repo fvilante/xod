@@ -1,3 +1,5 @@
+import { notEquals } from 'xod-func-tools';
+
 import { getProject } from '../project/selectors';
 
 import { getDeducedTypes, getErrors } from './selectors';
@@ -20,16 +22,20 @@ export default store => next => action => {
   if (oldProject === newProject) return newState;
 
   const prevDeducedTypes = getDeducedTypes(newState);
-  const nextDeducedTypes = shallDeduceTypes(action)
+  const nextDeducedTypes = shallDeduceTypes(newProject, action)
     ? deducePinTypesForProject(newProject, action, prevDeducedTypes)
     : prevDeducedTypes;
-  const willUpdateDeducedTypes = prevDeducedTypes !== nextDeducedTypes;
+  const willUpdateDeducedTypes = notEquals(prevDeducedTypes, nextDeducedTypes);
 
   const prevErrors = getErrors(newState);
   const nextErrors = shallValidate(action, newProject, nextDeducedTypes)
     ? validateProject(action, newProject, nextDeducedTypes, prevErrors)
     : prevErrors;
-  const willUpdateErrors = prevErrors !== nextErrors;
+  const willUpdateErrors = notEquals(prevErrors, nextErrors);
+
+  console.log('hinting', willUpdateDeducedTypes, willUpdateErrors);
+  console.log(nextDeducedTypes);
+  console.log(nextErrors);
 
   if (willUpdateDeducedTypes && willUpdateErrors) {
     next(updateHinting(nextDeducedTypes, nextErrors));

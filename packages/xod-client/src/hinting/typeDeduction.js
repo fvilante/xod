@@ -1,6 +1,6 @@
 import * as R from 'ramda';
 import * as XP from 'xod-project';
-import { isAmong, foldMaybe } from 'xod-func-tools';
+import { isAmong, foldMaybe, maybeProp, maybePath } from 'xod-func-tools';
 
 import * as PAT from '../project/actionTypes';
 
@@ -13,17 +13,38 @@ import { getActingPatchPath } from './utils';
 // =============================================================================
 
 // Run type deduction only for some actions
-// :: Action -> Boolean
-export const shallDeduceTypes = R.compose(
-  isAmong([
-    PAT.PROJECT_CREATE,
-    PAT.PROJECT_OPEN,
-    PAT.PROJECT_IMPORT,
-    PAT.BULK_DELETE_ENTITIES,
-    PAT.LINK_ADD,
-    PAT.NODE_UPDATE_PROPERTY,
-  ]),
-  R.prop('type')
+// :: Project -> Action -> Boolean
+export const shallDeduceTypes = R.curry((project, action) =>
+  R.anyPass([
+    // Deduce types only when changed value of generic pin
+    R.allPass([
+      R.propEq('type', PAT.NODE_UPDATE_PROPERTY),
+      R.complement(R.pathEq(['payload', 'key'], 'label')),
+      R.compose(
+        foldMaybe(false, XP.isGenericPin),
+        R.chain(patch =>
+          R.compose(
+            R.chain(maybeProp(action.payload.key)),
+            R.map(XP.getPinsForNode(R.__, patch, project)),
+            XP.getNodeById(action.payload.id)
+          )(patch)
+        ),
+        R.chain(XP.getPatchByPath(R.__, project)),
+        maybePath(['payload', 'patchPath'])
+      ),
+    ]),
+    // Always deduce for these action types:
+    R.propSatisfies(
+      isAmong([
+        PAT.PROJECT_CREATE,
+        PAT.PROJECT_OPEN,
+        PAT.PROJECT_IMPORT,
+        PAT.BULK_DELETE_ENTITIES,
+        PAT.LINK_ADD,
+      ]),
+      'type'
+    ),
+  ])(action)
 );
 
 // :: Project -> Action -> Maybe DeducedPinTypes

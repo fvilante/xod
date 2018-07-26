@@ -6,7 +6,7 @@ import {
   foldEither,
   explodeMaybe,
   mergeAllWithConcat,
-  notEmpty,
+  catMaybies,
   failOnNothing,
 } from 'xod-func-tools';
 
@@ -44,23 +44,18 @@ const predicates = {
     const nodeIds = action.payload.nodeIds;
     if (nodeIds.length === 0) return false;
 
-    const patchPath = action.payload.patchPath;
-
     return R.compose(
-      foldMaybe(true, R.any(isNodeTerminalOrSelf)),
-      R.chain(
-        R.pipe(
-          patch => R.map(XP.getNodeById(R.__, patch), nodeIds),
-          R.sequence(Maybe.of)
-        )
-      ),
-      XP.getPatchByPath(patchPath)
+      foldMaybe(false, XP.isVariadicPatch),
+      XP.getPatchByPath(action.payload.patchPath)
     )(project);
   },
   [PAT.NODE_UPDATE_PROPERTY]: (action, project) => {
+    const key = action.payload.key;
+    // If User changed description — do not validate
+    if (key === 'description') return false;
+
     const nodeId = action.payload.id;
     const patchPath = action.payload.patchPath;
-    const key = action.payload.key;
 
     return R.compose(
       foldMaybe(
@@ -76,6 +71,8 @@ const predicates = {
       XP.getPatchByPath
     )(patchPath, project);
   },
+  [PAT.PATCH_DESCRIPTION_UPDATE]: R.F,
+  [PAT.PATCH_NATIVE_IMPLEMENTATION_UPDATE]: R.F,
 };
 
 // A map of short-circuit validations
@@ -99,8 +96,8 @@ const callFnIfExist = R.curry(
     )(action)
 );
 
-// :: Map a b -> [a]
-const getNilKeys = R.pipe(R.filter(R.isNil), R.keys);
+// :: Map a (Maybe b) -> [a]
+const getKeysOfNothing = R.pipe(R.filter(Maybe.isNothing), R.keys);
 
 // =============================================================================
 //
@@ -252,15 +249,19 @@ const getNodeErrorsForPatch = R.compose(R.objOf('nodes'), getNodeErrors);
 // :: Project -> Patch -> Map PatchPath DeducedPinTypes -> { nodes: NodeErrors }
 const getLinkErrorsForPatch = R.compose(R.objOf('links'), getLinkErrors);
 
-// :: Project -> Map PatchPath DeducedPinTypes -> [Patch] -> Map PatchPath (Map NodeId [Error])
+// :: Project -> Map PatchPath DeducedPinTypes -> [Patch] -> Map PatchPath (Maybe PatchErrors)
 const validatePatches = R.curry((project, allDeducedPinTypes, patches) =>
   R.compose(
-    R.reject(
-      R.allPass([
-        R.pipe(R.prop('errors'), R.isEmpty),
-        R.pipe(R.prop('nodes'), R.isEmpty),
-        R.pipe(R.prop('links'), R.isEmpty),
-      ])
+    R.map(
+      R.ifElse(
+        R.allPass([
+          R.pipe(R.prop('errors'), R.isEmpty),
+          R.pipe(R.prop('nodes'), R.isEmpty),
+          R.pipe(R.prop('links'), R.isEmpty),
+        ]),
+        Maybe.Nothing,
+        Maybe.of
+      )
     ),
     R.map(patch =>
       R.mergeAll([
@@ -273,34 +274,32 @@ const validatePatches = R.curry((project, allDeducedPinTypes, patches) =>
   )(patches)
 );
 
-// :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors
+// :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath (Maybe PatchErrors)
 const validateLocalPatches = (project, allDeducedPinTypes) =>
   R.compose(validatePatches(project, allDeducedPinTypes), XP.listLocalPatches)(
     project
   );
 
-// :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors
+// :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath (Maybe PatchErrors)
 const validateAllPatches = (project, allDeducedPinTypes) =>
   R.compose(validatePatches(project, allDeducedPinTypes), XP.listPatches)(
     project
   );
 
-// :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors
+// :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath (Maybe PatchErrors)
 const generalValidator = (action, project, allDeducedPinTypes) => {
   const maybePatchPath = getActingPatchPath(action);
   if (Maybe.isJust(maybePatchPath)) {
     const patchPath = explodeMaybe('IMPOSSIBLE ERROR', maybePatchPath);
     return R.compose(
       R.compose(
-        R.ifElse(
-          notEmpty,
+        R.when(
+          Maybe.isJust,
           () =>
             XP.isPathLocal(patchPath)
               ? validateLocalPatches(project, allDeducedPinTypes)
-              : validateAllPatches(project, allDeducedPinTypes),
-          R.always({ [patchPath]: null }) // If valid — omit it
+              : validateAllPatches(project, allDeducedPinTypes)
         ),
-        // TODO: Do not check this patch again!
         validatePatches(project, allDeducedPinTypes),
         R.of
       ),
@@ -313,8 +312,8 @@ const generalValidator = (action, project, allDeducedPinTypes) => {
 
 // :: Map PatchPath (Map NodeId [Error]) -> Map PatchPath PatchErrors
 const mergeErrors = R.curry((prevErrors, nextErrors) => {
-  const patchPathsToOmit = getNilKeys(nextErrors);
-  return R.compose(R.omit(patchPathsToOmit), R.merge)(prevErrors, nextErrors);
+  const patchPathsToOmit = getKeysOfNothing(nextErrors);
+  return R.merge(R.omit(patchPathsToOmit, prevErrors), catMaybies(nextErrors));
 });
 
 // Validates Project
