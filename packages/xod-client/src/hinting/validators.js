@@ -193,8 +193,7 @@ const getPinErrors = R.curry((patch, project, node) =>
   )(project, patch, node)
 );
 
-// :: Patch -> Project -> Map NodeId NodeErrors
-const getNodeErrors = R.curry((patch, project) =>
+const validateNodes = R.curry((validators, patch, project) =>
   R.compose(
     R.map(R.merge({ errors: [], pins: {} })),
     // :: Map NodeId NodeErrors
@@ -212,16 +211,19 @@ const getNodeErrors = R.curry((patch, project) =>
     R.map(R.objOf('errors')),
     R.reject(R.isEmpty),
     // :: Map NodeId [Error]
-    () =>
-      mergeAllWithConcat([
-        getDeadRefErrorMap(patch, project),
-        getTerminalsErrorMap(patch),
-        getVariadicMarkersErrorMap(patch),
-        getAbstractMarkersErrorMap(patch),
-        getConstructorMarkersErrorMap(patch),
-      ])
-  )()
+    mergeAllWithConcat,
+    R.map(fn => fn(patch, project))
+  )(validators)
 );
+
+// :: Patch -> Project -> Map NodeId NodeErrors
+const getNodeErrors = validateNodes([
+  getDeadRefErrorMap,
+  getTerminalsErrorMap,
+  getVariadicMarkersErrorMap,
+  getAbstractMarkersErrorMap,
+  getConstructorMarkersErrorMap,
+]);
 
 // :: Patch -> Project -> Map PatchPath DeducedPinTypes -> Map LinkId LinkErrors
 const getLinkErrors = R.curry((patch, project, allDeducedPinTypes) =>
