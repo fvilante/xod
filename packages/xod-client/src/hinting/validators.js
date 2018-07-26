@@ -158,8 +158,8 @@ const getTerminalsErrorMap = R.compose(
 );
 
 // TODO: Use validator from xod-project after refactoring
-// :: Project -> Patch -> Map NodeId [Error]
-const getDeadRefErrorMap = (project, patch) =>
+// :: Patch -> Project -> Map NodeId [Error]
+const getDeadRefErrorMap = (patch, project) =>
   R.compose(
     R.reject(R.isEmpty),
     R.map(
@@ -180,8 +180,8 @@ const getDeadRefErrorMap = (project, patch) =>
     XP.listNodes
   )(patch);
 
-// :: Project -> Patch -> Node -> Map PinKey PinErrors
-const getPinErrors = R.curry((project, patch, node) =>
+// :: Patch -> Project -> Node -> Map PinKey PinErrors
+const getPinErrors = R.curry((patch, project, node) =>
   R.compose(
     R.map(
       R.compose(
@@ -193,8 +193,8 @@ const getPinErrors = R.curry((project, patch, node) =>
   )(project, patch, node)
 );
 
-// :: Project -> Patch -> Map NodeId NodeErrors
-const getNodeErrors = R.curry((project, patch) =>
+// :: Patch -> Project -> Map NodeId NodeErrors
+const getNodeErrors = R.curry((patch, project) =>
   R.compose(
     R.map(R.merge({ errors: [], pins: {} })),
     // :: Map NodeId NodeErrors
@@ -204,7 +204,7 @@ const getNodeErrors = R.curry((project, patch) =>
         // :: Map NodeId { pins: Map PinKey PinErrors }
         R.map(R.objOf('pins')),
         R.reject(R.isEmpty),
-        R.map(getPinErrors(project, patch)),
+        R.map(getPinErrors(patch, project)),
         R.indexBy(XP.getNodeId),
         XP.listNodes
       )(patch),
@@ -214,7 +214,7 @@ const getNodeErrors = R.curry((project, patch) =>
     // :: Map NodeId [Error]
     () =>
       mergeAllWithConcat([
-        getDeadRefErrorMap(project, patch),
+        getDeadRefErrorMap(patch, project),
         getTerminalsErrorMap(patch),
         getVariadicMarkersErrorMap(patch),
         getAbstractMarkersErrorMap(patch),
@@ -223,8 +223,8 @@ const getNodeErrors = R.curry((project, patch) =>
   )()
 );
 
-// :: Project -> Patch -> Map PatchPath DeducedPinTypes -> Map LinkId LinkErrors
-const getLinkErrors = R.curry((project, patch, allDeducedPinTypes) =>
+// :: Patch -> Project -> Map PatchPath DeducedPinTypes -> Map LinkId LinkErrors
+const getLinkErrors = R.curry((patch, project, allDeducedPinTypes) =>
   R.compose(
     R.map(R.objOf('errors')),
     R.reject(R.isEmpty),
@@ -244,9 +244,9 @@ const getLinkErrors = R.curry((project, patch, allDeducedPinTypes) =>
   )(patch)
 );
 
-// :: Project -> Patch -> { nodes: NodeErrors }
+// :: Patch -> Project -> { nodes: NodeErrors }
 const getNodeErrorsForPatch = R.compose(R.objOf('nodes'), getNodeErrors);
-// :: Project -> Patch -> Map PatchPath DeducedPinTypes -> { nodes: NodeErrors }
+// :: Patch -> Project -> Map PatchPath DeducedPinTypes -> { nodes: NodeErrors }
 const getLinkErrorsForPatch = R.compose(R.objOf('links'), getLinkErrors);
 
 // :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> [Patch] -> Map PatchPath (Maybe PatchErrors)
@@ -267,8 +267,8 @@ const validatePatches = R.curry(
       R.map(patch =>
         R.mergeAll([
           { errors: [], nodes: {}, links: {} },
-          getLinkErrorsForPatch(project, patch, allDeducedPinTypes),
-          getNodeErrorsForPatch(project, patch),
+          getLinkErrorsForPatch(patch, project, allDeducedPinTypes),
+          getNodeErrorsForPatch(patch, project),
         ])
       ),
       indexedPatches =>
