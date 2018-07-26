@@ -413,7 +413,7 @@ const patchEqualsToCurPatchPath = R.curry((maybeCurrentPatchPath, patch) =>
   )(patch)
 );
 
-// :: State -> [PatchSearchIndex]
+// :: State -> { search: (String -> [SearchResult])}
 export const getPatchSearchIndex = createSelector(
   [listPatches, getCurrentPatchPath],
   (patches, maybeCurPatchPath) =>
