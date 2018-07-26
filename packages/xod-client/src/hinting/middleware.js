@@ -33,10 +33,6 @@ export default store => next => action => {
     : prevErrors;
   const willUpdateErrors = notEquals(prevErrors, nextErrors);
 
-  console.log('hinting', willUpdateDeducedTypes, willUpdateErrors);
-  console.log(nextDeducedTypes);
-  console.log(nextErrors);
-
   if (willUpdateDeducedTypes && willUpdateErrors) {
     next(updateHinting(nextDeducedTypes, nextErrors));
   } else if (willUpdateDeducedTypes) {
