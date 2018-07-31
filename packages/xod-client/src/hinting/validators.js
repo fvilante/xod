@@ -1,16 +1,22 @@
 import * as R from 'ramda';
 import * as XP from 'xod-project';
-import { foldMaybe } from 'xod-func-tools';
+import { foldMaybe, catMaybies } from 'xod-func-tools';
 
 import * as PAT from '../project/actionTypes';
+import * as EAT from '../editor/actionTypes';
 
 import {
   generalValidator,
   callFnIfExist,
   mergeErrors,
-  validate,
+  validatePatches,
+  validatePatchByAction,
+  validatePatchesGenerally,
   // Basic validate functions:
   getVariadicMarkersErrorMap,
+  getDeadRefErrorMap,
+  validateBoundValues,
+  validateLinkPins,
 } from './validators.internal';
 
 // PinErrors :: { errors: [Error] } | {}
@@ -36,7 +42,7 @@ const isNodeTerminalOrSelf = R.compose(
 // to check shall we need to run any validations on this changes
 // Indexed by ActionTypes
 // Return false to skip validation
-// Map ActionType (Action -> Project -> Map PatchPath DeducedPinTypes -> Boolean)
+// Map ActionType (Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Boolean)
 const predicates = {
   [PAT.BULK_MOVE_NODES_AND_COMMENTS]: (action, project) => {
     // Could change validity only when moving terminals or `output-self` marker
@@ -78,21 +84,76 @@ const predicates = {
 // Indexed by ActionTypes
 const shortValidators = {
   /**
-   * validate(
-   *   // Validates Nodes with
-   *   [ (Patch -> Project -> Map NodeId [Error]) ],
-   *   // Validates Pins with
-   *   [ (Patch -> Project -> Map PinKey PinErrors) ],
-   *   // Validates Links with
-   *   [ (Link -> Patch -> Project -> Map PatchPath DeducedPinTypes -> [Error]) ]
-   * )
+   * To validate only one Patch, that was referenced in the Action, call:
+   * validatePatchByAction :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] ->  Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
+   *
+   * To validate patches with any specific PatchPaths use `validatePatches`
+   * with a signature:
+   * validatePatches :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath (Maybe PatchErrors)
+   *
+   * To validate patches with default set of validating functions
+   * (like `validatePatches` but with predefined arrays of functions)
+   * call `validatePatchesGenerally` with a signature:
+   * validatePatchesGenerally :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath (Maybe PatchErrors)
+   *
+   * Or write a custom function, that have a signature:
+   * :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
+   *
+   * Nothings will be omitted from errors, if there was an error.
+   * Justs will be added into errors.
+   * All other Patches, that was not mentioned in the result, will be left
+   * without any changes in the Error state.
    */
   // Check only for valid variadics
-  [PAT.BULK_MOVE_NODES_AND_COMMENTS]: validate([
+  [PAT.BULK_MOVE_NODES_AND_COMMENTS]: validatePatchByAction(
     [getVariadicMarkersErrorMap],
     [],
-    [],
-  ]),
+    []
+  ),
+  // When library installed we have to check all patches inside installed library
+  // And check all errored patches, cause it could have a dependency to newly installed library
+  [EAT.INSTALL_LIBRARIES_COMPLETE]: (
+    action,
+    project,
+    deducedPinTypes,
+    prevErrors
+  ) => {
+    const newErrorsForPrevivouslyErroredPatches = R.compose(
+      validatePatches(
+        [getDeadRefErrorMap],
+        [validateBoundValues],
+        [validateLinkPins],
+        project,
+        deducedPinTypes,
+        prevErrors
+      ),
+      catMaybies,
+      R.map(XP.getPatchByPath(R.__, project)),
+      R.keys
+    )(prevErrors);
+
+    const installedLibNames = R.compose(
+      R.map(libName => {
+        // TODO: Replace with `R.takeWhile` from newer Ramda
+        const index = libName.indexOf('@');
+        return libName.substring(0, index !== -1 ? index : libName.length);
+      }),
+      R.keys,
+      R.path(['payload', 'projects'])
+    )(action);
+
+    const isAmongToInstalledLibs = R.compose(R.anyPass, R.map(R.startsWith))(
+      installedLibNames
+    );
+
+    const libErrors = R.compose(
+      validatePatchesGenerally(project, deducedPinTypes, prevErrors),
+      R.filter(R.pipe(XP.getPatchPath, isAmongToInstalledLibs)),
+      XP.listPatches
+    )(project);
+
+    return R.merge(newErrorsForPrevivouslyErroredPatches, libErrors);
+  },
 };
 
 // =============================================================================
@@ -115,5 +176,5 @@ export const validateProject = R.curry(
     R.compose(
       mergeErrors(prevErrors),
       callFnIfExist(shortValidators, generalValidator)
-    )(action, newProject, deducedPinTypes)
+    )(action, newProject, deducedPinTypes, prevErrors)
 );
