@@ -146,3 +146,7 @@ export const sameKeysetBy = def(
 
 // :: [StrMap [a]] -> StrMap [a]
 export const mergeAllWithConcat = R.reduce(R.mergeWith(R.concat), {});
+
+// ObjectOrArray :: [a] | StrMap ObjectOrArray
+// :: [StrMap ObjectOrArray] -> StrMap ObjectOrArray
+export const mergeAllDeepWithConcat = R.reduce(R.mergeDeepWith(R.concat), {});

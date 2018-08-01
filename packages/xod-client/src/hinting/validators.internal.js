@@ -4,16 +4,14 @@ import * as XP from 'xod-project';
 import {
   foldEither,
   explodeMaybe,
-  mergeAllWithConcat,
-  catMaybies,
+  mergeAllDeepWithConcat,
   failOnNothing,
-  concatLists,
 } from 'xod-func-tools';
 
 import { getActingPatchPath } from './utils';
 
 // PinValidateFn :: Patch -> Project -> Map PinKey PinErrors
-// NodeValidateFn :: Patch -> Project -> Map NodeId [Error]
+// NodeValidateFn :: Patch -> Project -> Map NodeId NodeErrors
 // LinkValidateFn :: Link -> Patch -> Project -> Map PatchPath DeducedPinTypes -> [Error]
 
 // =============================================================================
@@ -22,7 +20,11 @@ import { getActingPatchPath } from './utils';
 //
 // =============================================================================
 
-export const getMarkerNodesErrorMap = (predicate, validator) => patch => {
+export const getMarkerNodesErrorMap = (
+  predicate,
+  validator,
+  errorType
+) => patch => {
   const markerNodeIds = R.compose(
     R.map(XP.getNodeId),
     R.filter(predicate),
@@ -33,34 +35,40 @@ export const getMarkerNodesErrorMap = (predicate, validator) => patch => {
 
   return foldEither(
     err =>
-      R.compose(R.map(R.of), R.fromPairs, R.map(R.pair(R.__, [err])))(
-        markerNodeIds
-      ),
-    R.always({}),
+      R.compose(
+        R.map(R.of),
+        R.fromPairs,
+        R.map(R.pair(R.__, { [errorType]: [err] }))
+      )(markerNodeIds),
+    R.always({ [errorType]: [] }),
     validator(patch)
   );
 };
 
-// :: Patch -> Map NodeId [Error]
+// :: Patch -> Map NodeId (Map ErrorType [Error])
 export const getVariadicMarkersErrorMap = getMarkerNodesErrorMap(
   R.pipe(XP.getNodeType, XP.isVariadicPath),
-  XP.validatePatchForVariadics
+  XP.validatePatchForVariadics,
+  'validatePatchForVariadics'
 );
 
-// :: Patch -> Map NodeId [Error]
+// :: Patch -> Map NodeId (Map ErrorType [Error])
 export const getAbstractMarkersErrorMap = getMarkerNodesErrorMap(
   R.pipe(XP.getNodeType, R.equals(XP.ABSTRACT_MARKER_PATH)),
-  XP.validateAbstractPatch
+  XP.validateAbstractPatch,
+  'validateAbstractPatch'
 );
 
-// :: Patch -> Map NodeId [Error]
+// :: Patch -> Map NodeId (Map ErrorType [Error])
 export const getConstructorMarkersErrorMap = getMarkerNodesErrorMap(
   R.pipe(XP.getNodeType, R.equals(XP.OUTPUT_SELF_PATH)),
-  XP.validateConstructorPatch
+  XP.validateConstructorPatch,
+  'validateConstructorPatch'
 );
 
-// :: Patch -> Map NodeId [Error]
+// :: Patch -> Map NodeId (Map ErrorType [Error])
 export const getTerminalsErrorMap = R.compose(
+  R.map(R.objOf('validatePinLabels')),
   foldEither(
     err =>
       R.compose(
@@ -69,18 +77,18 @@ export const getTerminalsErrorMap = R.compose(
         R.map(R.pair(R.__, err)),
         R.path(['payload', 'pinKeys']) // those are affected terminal node ids
       )(err),
-    R.always({})
+    R.always([])
   ),
   XP.validatePinLabels
 );
 
 // TODO: Use validator from xod-project after refactoring
-// :: Patch -> Project -> Map NodeId [Error]
+// :: Patch -> Project -> Map NodeId (Map ErrorType [Error])
 export const getDeadRefErrorMap = (patch, project) =>
   R.compose(
-    R.reject(R.isEmpty),
     R.map(
       R.compose(
+        R.objOf('checkPatchExists'),
         foldEither(R.of, R.always([])),
         nodeType => {
           const patchPath = XP.getPatchPath(patch);
@@ -103,16 +111,18 @@ export const validateBoundValues = R.curry((patch, project, node) =>
     R.map(
       R.compose(
         R.objOf('errors'),
-        foldEither(R.pipe(R.identity, R.of), R.always({}))
+        R.objOf('getInvalidBoundNodePins'),
+        foldEither(R.of, R.always([]))
       )
     ),
     XP.getInvalidBoundNodePins
   )(project, patch, node)
 );
 
-// :: Link -> Patch -> Project -> Map PatchPath DeducedPinTypes -> [Error]
+// :: Link -> Patch -> Project -> Map PatchPath DeducedPinTypes -> Map ErrorType [Error]
 const validateLinkPins = R.curry((link, patch, project, allDeducedPinTypes) =>
   R.compose(
+    R.objOf('validateLinkPins'),
     foldEither(R.of, R.always([])),
     XP.validateLinkPins(link, patch, project),
     R.propOr({}, XP.getPatchPath(patch))
@@ -125,35 +135,30 @@ const validateLinkPins = R.curry((link, patch, project, allDeducedPinTypes) =>
 //
 // =============================================================================
 
-// :: Map a (Maybe b) -> [a]
-const getKeysOfNothing = R.pipe(R.filter(Maybe.isNothing), R.keys);
-
 // :: [NodeValidateFn] -> Patch -> Project -> Map PatchPath PatchErrors -> Map NodeId NodeErrors
 const validateNodes = R.curry(
   (nodeValidators, pinValidators, patch, project, prevErrors) =>
     R.compose(
-      R.map(R.merge({ errors: [], pins: {} })),
+      R.map(R.merge({ errors: {}, pins: {} })),
       // :: Map NodeId NodeErrors
       nodeErrorsMap =>
         R.compose(
-          R.merge(nodeErrorsMap),
-          // :: Map NodeId { pins: Map PinKey PinErrors }
+          R.mergeDeepWith(R.concat, nodeErrorsMap),
+          // :: Map NodeId { pins: Map PinKey (Map ErrorType (Maybe [Error])) }
           R.map(R.objOf('pins')),
-          R.reject(R.isEmpty),
           R.map(node =>
             R.compose(
-              mergeAllWithConcat,
+              mergeAllDeepWithConcat,
               R.map(fn => fn(patch, project, node, prevErrors))
             )(pinValidators)
           ),
           R.indexBy(XP.getNodeId),
           XP.listNodes
         )(patch),
-      // :: Map NodeId { errors: [Error], pins: {} }
+      // :: Map NodeId { errors: Map ErrorType [Error] }
       R.map(R.objOf('errors')),
-      R.reject(R.isEmpty),
-      // :: Map NodeId [Error]
-      mergeAllWithConcat,
+      // :: Map NodeId (Map ErrorType [Error])
+      mergeAllDeepWithConcat,
       R.map(fn => fn(patch, project, prevErrors))
     )(nodeValidators)
 );
@@ -163,10 +168,9 @@ const validateLinks = R.curry(
   (validators, patch, project, allDeducedPinTypes, prevErrors) =>
     R.compose(
       R.map(R.objOf('errors')),
-      R.reject(R.isEmpty),
       R.map(link =>
         R.compose(
-          concatLists,
+          mergeAllDeepWithConcat,
           R.map(fn => fn(link, patch, project, allDeducedPinTypes, prevErrors))
         )(validators)
       ),
@@ -175,7 +179,7 @@ const validateLinks = R.curry(
     )(patch)
 );
 
-// :: [NodeValidateFn] -> [PinValidateFn] -> Patch -> Project -> Map PatchPath PatchErrors -> { nodes: NodeErrors }
+// :: [NodeValidateFn] -> [PinValidateFn] -> Patch -> Project -> Map PatchPath PatchErrors -> { nodes: Map NodeId NodeErrors }
 const getNodeErrors = R.curry(
   (nodeValidators, pinValidators, patch, project, prevErrors) =>
     R.compose(R.objOf('nodes'), validateNodes(nodeValidators, pinValidators))(
@@ -184,7 +188,7 @@ const getNodeErrors = R.curry(
       prevErrors
     )
 );
-// :: [LinkValidateFn] -> Patch -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> { nodes: NodeErrors }
+// :: [LinkValidateFn] -> Patch -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> { links: Map LinkId LinkErrors }
 const getLinkErrors = R.curry(
   (linkValidators, patch, project, allDeducedPinTypes, prevErrors) =>
     R.compose(R.objOf('links'), validateLinks(linkValidators))(
@@ -207,20 +211,9 @@ export const validatePatches = R.curry(
     patches
   ) =>
     R.compose(
-      R.map(
-        R.ifElse(
-          R.allPass([
-            R.pipe(R.prop('errors'), R.isEmpty),
-            R.pipe(R.prop('nodes'), R.isEmpty),
-            R.pipe(R.prop('links'), R.isEmpty),
-          ]),
-          Maybe.Nothing,
-          Maybe.of
-        )
-      ),
       R.map(patch =>
-        R.mergeAll([
-          { errors: [], nodes: {}, links: {} },
+        mergeAllDeepWithConcat([
+          { errors: {}, nodes: {}, links: {} },
           getLinkErrors(
             linkValidators,
             patch,
@@ -349,11 +342,44 @@ export const generalValidator = (
   return validateAllPatches(project, allDeducedPinTypes, null, prevErrors);
 };
 
-// :: Map PatchPath (Map NodeId [Error]) -> Map PatchPath PatchErrors
-export const mergeErrors = R.curry((prevErrors, nextErrors) => {
-  const patchPathsToOmit = getKeysOfNothing(nextErrors);
-  return R.merge(R.omit(patchPathsToOmit, prevErrors), catMaybies(nextErrors));
-});
+const propChildrenEmpty = R.propSatisfies(R.pipe(R.values, R.all(R.isEmpty)));
+const propEmpty = R.propSatisfies(R.isEmpty);
+
+// :: { errors: Map ErrorType [Error] } -> Boolean
+const haveNoErrors = R.either(propEmpty('errors'), propChildrenEmpty('errors'));
+
+// :: { pins: Map PinKey (Map ErrorType [Error]) } -> Boolean
+const haveNoPinErrors = R.either(
+  propEmpty('pins'),
+  R.either(
+    propChildrenEmpty('pins'),
+    R.compose(R.all(propChildrenEmpty('errors')), R.values, R.prop('pins'))
+  )
+);
+
+// :: { nodes: Map NodeId { errors: Map ErrorType [Error], pins: Map PinKey (Map ErrorType [Error]) } } -> Boolean
+const haveNoNodeErrors = R.either(
+  propEmpty('nodes'),
+  R.compose(
+    R.all(R.both(haveNoErrors, haveNoPinErrors)),
+    R.values,
+    R.prop('nodes')
+  )
+);
+
+// :: { links: Map LinkId { errors: Map ErrorType [Error] } } -> Boolean
+const haveNoLinkErrors = R.either(
+  propEmpty('links'),
+  R.compose(R.all(haveNoErrors), R.values, R.prop('links'))
+);
+
+// :: Map PatchPath PatchErrors -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+export const mergeErrors = R.curry((prevErrors, nextErrors) =>
+  R.compose(
+    R.reject(R.allPass([haveNoErrors, haveNoNodeErrors, haveNoLinkErrors])),
+    R.mergeDeepRight
+  )(prevErrors, nextErrors)
+);
 
 // :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] ->  Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
 export const validatePatchByAction = R.curry(

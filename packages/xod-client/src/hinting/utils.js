@@ -1,11 +1,14 @@
 import * as R from 'ramda';
 import { maybePath, foldMaybe, maybeProp, concatLists } from 'xod-func-tools';
 
+// :: { errors: StrMap [Error] } -> [Error]
+const getErrors = R.pipe(R.prop('errors'), R.values, R.flatten);
+
 // :: NodeErrors -> [Error]
 const mergeNodeErrors = nodeErrors =>
   R.concat(
-    nodeErrors.errors,
-    R.pipe(R.prop('pins'), R.values, R.pluck('errors'), concatLists)(nodeErrors)
+    getErrors(nodeErrors),
+    R.pipe(R.prop('pins'), R.values, getErrors, concatLists)(nodeErrors)
   );
 
 // :: PatchPath -> NodeId -> Map PatchPath PatchErrors -> [Error]
@@ -20,8 +23,8 @@ export const getAllErrorsForNode = R.curry((patchPath, nodeId, errors) =>
 // :: PatchPath -> LinkId -> Map PatchPath PatchErrors -> [Error]
 export const getAllErrorsForLink = R.curry((patchPath, linkId, errors) =>
   R.compose(
-    foldMaybe([], R.identity),
-    R.chain(maybePath(['links', linkId, 'errors'])),
+    foldMaybe([], getErrors),
+    R.chain(maybePath(['links', linkId])),
     maybeProp(patchPath)
   )(errors)
 );

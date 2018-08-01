@@ -19,10 +19,10 @@ import {
   validateLinkPins,
 } from './validators.internal';
 
-// PinErrors :: { errors: [Error] } | {}
-// LinkErrors :: { errors: [Error] } | {}
-// NodeErrors :: { errors: [Error], pins: Map PinKey PinErrors } | {}
-// PatchErrors :: { errors: [Error], nodes: Map NodeId NodeErrors } | {}
+// PinErrors :: { errors: Map ErrorType (Maybe [Error]) }
+// LinkErrors :: { errors: Map ErrorType (Maybe [Error]) }
+// NodeErrors :: { errors: Map ErrorType (Maybe [Error]), pins: Map PinKey PinErrors }
+// PatchErrors :: { errors: Map ErrorType (Maybe [Error]), nodes: Map NodeId NodeErrors }
 
 // =============================================================================
 //
@@ -80,36 +80,48 @@ const predicates = {
   [PAT.PATCH_NATIVE_IMPLEMENTATION_UPDATE]: R.F,
 };
 
-// A map of short-circuit validations
-// Indexed by ActionTypes
+/**
+ * A map of short-circuit validations and exceptions to the general rules
+ * of validation.
+ * For example of exception case see `PAT.PATCH_ADD`.
+ *
+ * Indexed by ActionTypes.
+ *
+ * To validate only one Patch, that was referenced in the Action, call:
+ * validatePatchByAction :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] ->  Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+ *
+ * To validate patches with any specific PatchPaths use `validatePatches`
+ * with a signature:
+ * validatePatches :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath PatchErrors
+ *
+ * To validate patches with default set of validating functions
+ * (like `validatePatches` but with predefined arrays of functions)
+ * call `validatePatchesGenerally` with a signature:
+ * validatePatchesGenerally :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath PatchErrors
+ *
+ * Or write a custom function, that have a signature:
+ * :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+ *
+ * Nothings will be omitted from errors, if there was an error.
+ * Justs will be added into errors.
+ * All other Patches, that was not mentioned in the result, will be left
+ * without any changes in the Error state.
+ */
 const shortValidators = {
-  /**
-   * To validate only one Patch, that was referenced in the Action, call:
-   * validatePatchByAction :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] ->  Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
-   *
-   * To validate patches with any specific PatchPaths use `validatePatches`
-   * with a signature:
-   * validatePatches :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath (Maybe PatchErrors)
-   *
-   * To validate patches with default set of validating functions
-   * (like `validatePatches` but with predefined arrays of functions)
-   * call `validatePatchesGenerally` with a signature:
-   * validatePatchesGenerally :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath (Maybe PatchErrors)
-   *
-   * Or write a custom function, that have a signature:
-   * :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
-   *
-   * Nothings will be omitted from errors, if there was an error.
-   * Justs will be added into errors.
-   * All other Patches, that was not mentioned in the result, will be left
-   * without any changes in the Error state.
-   */
+  // Exception, we have to validate whole local project
+  [PAT.PATCH_ADD]: (_, project, deducedPinTypes, prevErrors) =>
+    R.compose(
+      validatePatchesGenerally(project, deducedPinTypes, prevErrors),
+      XP.listLocalPatches
+    )(project),
+
   // Check only for valid variadics
   [PAT.BULK_MOVE_NODES_AND_COMMENTS]: validatePatchByAction(
     [getVariadicMarkersErrorMap],
     [],
     []
   ),
+
   // When library installed we have to check all patches inside installed library
   // And check all errored patches, cause it could have a dependency to newly installed library
   [EAT.INSTALL_LIBRARIES_COMPLETE]: (
