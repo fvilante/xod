@@ -4,6 +4,7 @@ import * as XP from 'xod-project';
 import {
   foldEither,
   explodeMaybe,
+  mergeAllWithConcat,
   mergeAllDeepWithConcat,
   failOnNothing,
 } from 'xod-func-tools';
@@ -13,6 +14,14 @@ import { getActingPatchPath } from './utils';
 // PinValidateFn :: Patch -> Project -> Map PinKey PinErrors
 // NodeValidateFn :: Patch -> Project -> Map NodeId NodeErrors
 // LinkValidateFn :: Link -> Patch -> Project -> Map PatchPath DeducedPinTypes -> [Error]
+
+// ErrorsUpdateData :: { policy: UPDATE_ERRORS_POLICY, errors: Map PatchPath PatchErrors }
+
+const UPDATE_ERRORS_POLICY = {
+  OVERWRITE: 'OVERWRITE_ERRORS', // Overwrites whole object with new one
+  MERGE: 'MERGE_ERRORS', // Merges deeply new object into previvous one
+  ASSOC: 'ASSOC_ERRORS', // Overwrites only listed patch paths
+};
 
 // =============================================================================
 //
@@ -36,9 +45,8 @@ export const getMarkerNodesErrorMap = (
   return foldEither(
     err =>
       R.compose(
-        R.map(R.of),
-        R.fromPairs,
-        R.map(R.pair(R.__, { [errorType]: [err] }))
+        mergeAllWithConcat,
+        R.map(R.objOf(R.__, { [errorType]: [err] }))
       )(markerNodeIds),
     R.always({ [errorType]: [] }),
     validator(patch)
@@ -199,7 +207,88 @@ const getLinkErrors = R.curry(
     )
 );
 
-// :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath (Maybe PatchErrors)
+// :: PatchPath -> [Patch] -> [Patch]
+const filterPatchAndDependentPatchesByPatchPath = R.curry(
+  (patchPath, patches) =>
+    R.when(
+      () => patchPath,
+      R.filter(
+        R.either(
+          XP.hasNodeWithType(patchPath),
+          R.pipe(XP.getPatchPath, R.equals(patchPath))
+        )
+      )
+    )(patches)
+);
+
+const propChildrenEmpty = R.propSatisfies(R.pipe(R.values, R.all(R.isEmpty)));
+const propEmpty = R.propSatisfies(R.isEmpty);
+
+// :: { errors: Map ErrorType [Error] } -> Boolean
+const haveNoErrors = R.either(propEmpty('errors'), propChildrenEmpty('errors'));
+
+// :: { pins: Map PinKey (Map ErrorType [Error]) } -> Boolean
+const haveNoPinErrors = R.either(
+  propEmpty('pins'),
+  R.either(
+    propChildrenEmpty('pins'),
+    R.compose(R.all(propChildrenEmpty('errors')), R.values, R.prop('pins'))
+  )
+);
+
+// :: { nodes: Map NodeId { errors: Map ErrorType [Error], pins: Map PinKey (Map ErrorType [Error]) } } -> Boolean
+const haveNoNodeErrors = R.either(
+  propEmpty('nodes'),
+  R.compose(
+    R.all(R.both(haveNoErrors, haveNoPinErrors)),
+    R.values,
+    R.prop('nodes')
+  )
+);
+
+// :: { links: Map LinkId { errors: Map ErrorType [Error] } } -> Boolean
+const haveNoLinkErrors = R.either(
+  propEmpty('links'),
+  R.compose(R.all(haveNoErrors), R.values, R.prop('links'))
+);
+
+// :: PatchErrors -> Boolean
+const haveNoAnyErrors = R.allPass([
+  haveNoErrors,
+  haveNoNodeErrors,
+  haveNoLinkErrors,
+]);
+
+// =============================================================================
+//
+// API
+//
+// =============================================================================
+
+export const callFnIfExist = R.curry(
+  (fnMap, defFn, action, project, allDeducedPinTypes, prevErrors) =>
+    R.compose(
+      fn => fn(action, project, allDeducedPinTypes, prevErrors),
+      R.defaultTo(defFn),
+      R.prop(R.__, fnMap),
+      R.prop('type')
+    )(action)
+);
+
+export const setOverwritePolicy = errors => ({
+  policy: UPDATE_ERRORS_POLICY.OVERWRITE,
+  errors,
+});
+export const setMergePolicy = errors => ({
+  policy: UPDATE_ERRORS_POLICY.MERGE,
+  errors,
+});
+export const setAssocPolicy = errors => ({
+  policy: UPDATE_ERRORS_POLICY.ASSOC,
+  errors,
+});
+
+// :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath PatchErrors
 export const validatePatches = R.curry(
   (
     nodeValidators,
@@ -234,7 +323,7 @@ export const validatePatches = R.curry(
     )(patches)
 );
 
-// :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath (Maybe PatchErrors)
+// :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath PatchErrors
 export const validatePatchesGenerally = validatePatches(
   [
     getDeadRefErrorMap,
@@ -247,63 +336,27 @@ export const validatePatchesGenerally = validatePatches(
   [validateLinkPins]
 );
 
-// :: PatchPath -> [Patch] -> [Patch]
-const filterPatchAndDependentPatchesByPatchPath = R.curry(
-  (patchPath, patches) =>
-    R.when(
-      () => patchPath,
-      R.filter(
-        R.either(
-          XP.hasNodeWithType(patchPath),
-          R.pipe(XP.getPatchPath, R.equals(patchPath))
-        )
-      )
-    )(patches)
-);
-
-// :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
-const validateLocalPatches = (
-  project,
-  allDeducedPinTypes,
-  changedPatchPath,
-  prevErrors
-) =>
-  R.compose(
-    validatePatchesGenerally(project, allDeducedPinTypes, prevErrors),
-    filterPatchAndDependentPatchesByPatchPath(changedPatchPath),
-    XP.listLocalPatches
-  )(project);
-
-// :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
-const validateAllPatches = (
-  project,
-  allDeducedPinTypes,
-  changedPatchPath,
-  prevErrors
-) =>
-  R.compose(
-    validatePatchesGenerally(project, allDeducedPinTypes, prevErrors),
-    filterPatchAndDependentPatchesByPatchPath(changedPatchPath),
-    XP.listPatches
-  )(project);
-
-// =============================================================================
-//
-// API
-//
-// =============================================================================
-
-export const callFnIfExist = R.curry(
-  (fnMap, defFn, action, project, allDeducedPinTypes, prevErrors) =>
+// :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+export const validateLocalPatches = R.curry(
+  (project, allDeducedPinTypes, changedPatchPath, prevErrors) =>
     R.compose(
-      fn => fn(action, project, allDeducedPinTypes, prevErrors),
-      R.defaultTo(defFn),
-      R.prop(R.__, fnMap),
-      R.prop('type')
-    )(action)
+      validatePatchesGenerally(project, allDeducedPinTypes, prevErrors),
+      filterPatchAndDependentPatchesByPatchPath(changedPatchPath),
+      XP.listLocalPatches
+    )(project)
 );
 
-// :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
+// :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+export const validateAllPatches = R.curry(
+  (project, allDeducedPinTypes, changedPatchPath, prevErrors) =>
+    R.compose(
+      validatePatchesGenerally(project, allDeducedPinTypes, prevErrors),
+      filterPatchAndDependentPatchesByPatchPath(changedPatchPath),
+      XP.listPatches
+    )(project)
+);
+
+// :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> ErrorsUpdateData
 export const generalValidator = (
   action,
   project,
@@ -315,23 +368,33 @@ export const generalValidator = (
     const patchPath = explodeMaybe('IMPOSSIBLE ERROR', maybePatchPath);
     return R.compose(
       R.compose(
-        R.when(
-          R.pipe(R.values, R.head, Maybe.isJust),
+        R.ifElse(
+          R.has(patchPath),
           () =>
-            XP.isPathLocal(patchPath)
-              ? validateLocalPatches(
+            R.ifElse(
+              XP.isPathLocal,
+              R.compose(
+                setAssocPolicy,
+                validateLocalPatches(
                   project,
                   allDeducedPinTypes,
-                  patchPath,
+                  R.__,
                   prevErrors
                 )
-              : validateAllPatches(
+              ),
+              R.compose(
+                setOverwritePolicy,
+                validateAllPatches(
                   project,
                   allDeducedPinTypes,
-                  patchPath,
+                  R.__,
                   prevErrors
                 )
+              )
+            )(patchPath),
+          setAssocPolicy
         ),
+        R.reject(haveNoAnyErrors),
         validatePatchesGenerally(project, allDeducedPinTypes, prevErrors),
         R.of
       ),
@@ -339,50 +402,42 @@ export const generalValidator = (
     )(patchPath, project);
   }
 
-  return validateAllPatches(project, allDeducedPinTypes, null, prevErrors);
+  return R.compose(setOverwritePolicy, validateAllPatches)(
+    project,
+    allDeducedPinTypes,
+    null,
+    prevErrors
+  );
 };
 
-const propChildrenEmpty = R.propSatisfies(R.pipe(R.values, R.all(R.isEmpty)));
-const propEmpty = R.propSatisfies(R.isEmpty);
-
-// :: { errors: Map ErrorType [Error] } -> Boolean
-const haveNoErrors = R.either(propEmpty('errors'), propChildrenEmpty('errors'));
-
-// :: { pins: Map PinKey (Map ErrorType [Error]) } -> Boolean
-const haveNoPinErrors = R.either(
-  propEmpty('pins'),
-  R.either(
-    propChildrenEmpty('pins'),
-    R.compose(R.all(propChildrenEmpty('errors')), R.values, R.prop('pins'))
-  )
-);
-
-// :: { nodes: Map NodeId { errors: Map ErrorType [Error], pins: Map PinKey (Map ErrorType [Error]) } } -> Boolean
-const haveNoNodeErrors = R.either(
-  propEmpty('nodes'),
-  R.compose(
-    R.all(R.both(haveNoErrors, haveNoPinErrors)),
-    R.values,
-    R.prop('nodes')
-  )
-);
-
-// :: { links: Map LinkId { errors: Map ErrorType [Error] } } -> Boolean
-const haveNoLinkErrors = R.either(
-  propEmpty('links'),
-  R.compose(R.all(haveNoErrors), R.values, R.prop('links'))
-);
-
-// :: Map PatchPath PatchErrors -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+// :: Map PatchPath PatchErrors -> ErrorsUpdateData -> Map PatchPath PatchErrors
 export const mergeErrors = R.curry((prevErrors, nextErrors) =>
   R.compose(
-    R.reject(R.allPass([haveNoErrors, haveNoNodeErrors, haveNoLinkErrors])),
-    R.mergeDeepRight
-  )(prevErrors, nextErrors)
+    R.reject(haveNoAnyErrors),
+    R.cond([
+      [
+        () => R.propEq('policy', UPDATE_ERRORS_POLICY.MERGE, nextErrors),
+        R.mergeDeepRight(prevErrors),
+      ],
+      [
+        () => R.propEq('policy', UPDATE_ERRORS_POLICY.ASSOC, nextErrors),
+        R.compose(
+          R.reduce(
+            (acc, [patchPath, patchErrors]) =>
+              R.assoc(patchPath, patchErrors, acc),
+            prevErrors
+          ),
+          R.toPairs
+        ),
+      ],
+      [R.T, R.identity],
+    ]),
+    R.prop('errors')
+  )(nextErrors)
 );
 
-// :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] ->  Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath (Maybe PatchErrors)
-export const validatePatchByAction = R.curry(
+// :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] ->  Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> ErrorsUpdateData
+export const validateChangedPatch = R.curry(
   (
     nodeValidators,
     pinValidators,
@@ -402,6 +457,7 @@ export const validatePatchByAction = R.curry(
     if (Maybe.isJust(maybePatchPath)) {
       const patchPath = explodeMaybe('IMPOSSIBLE ERROR', maybePatchPath);
       return R.compose(
+        setMergePolicy,
         validateFn(project, allDeducedPinTypes, prevErrors),
         R.of,
         XP.getPatchByPathUnsafe

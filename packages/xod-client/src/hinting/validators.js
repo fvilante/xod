@@ -10,8 +10,11 @@ import {
   callFnIfExist,
   mergeErrors,
   validatePatches,
-  validatePatchByAction,
+  validateLocalPatches,
+  validateChangedPatch,
   validatePatchesGenerally,
+  setAssocPolicy,
+  setMergePolicy,
   // Basic validate functions:
   getVariadicMarkersErrorMap,
   getDeadRefErrorMap,
@@ -43,7 +46,7 @@ const isNodeTerminalOrSelf = R.compose(
 // Indexed by ActionTypes
 // Return false to skip validation
 // Map ActionType (Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Boolean)
-const predicates = {
+const shouldValidate = {
   [PAT.BULK_MOVE_NODES_AND_COMMENTS]: (action, project) => {
     // Could change validity only when moving terminals or `output-self` marker
     const nodeIds = action.payload.nodeIds;
@@ -86,40 +89,72 @@ const predicates = {
  * For example of exception case see `PAT.PATCH_ADD`.
  *
  * Indexed by ActionTypes.
+ * Should return `ErrorsUpdateData` { policy: UPDATE_ERRORS_POLICY, errors: Map PatchPath PatchErrors }
+ *
+ * Better and simplies way to produce this type is apply `set*Policy` function
+ * as a last step of custom validation.
+ * There are three policy rules:
+ * `setMergePolicy`      - will merge new errors deeply inside previvous errors.
+ *                         It's handy when you check only one thing, not whole
+ *                         patch or patches.
+ * `setAssocPolicy`      - will overwrite errors only for listed patch paths.
+ *                         Use it when you validates some patches for all
+ *                         possibly errors. E.G. `validateLocalPatches`.
+ * `setOverwritePolicy`  - will overwrite all errors with new ones.
+ *                         Use it only when you validates whole project,
+ *                         including library patches.
+ *
+ * Signature for each function in this map:
+ * :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> ErrorsUpdateData
+ *
+ * But there is a pack of utility functions, that make validation easier:
  *
  * To validate only one Patch, that was referenced in the Action, call:
- * validatePatchByAction :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] ->  Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+ * validateChangedPatch :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] ->  Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
  *
- * To validate patches with any specific PatchPaths use `validatePatches`
- * with a signature:
+ * To validate specific list of patches.
  * validatePatches :: [NodeValidateFn] -> [PinValidateFn] -> [LinkValidateFn] -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath PatchErrors
  *
- * To validate patches with default set of validating functions
- * (like `validatePatches` but with predefined arrays of functions)
- * call `validatePatchesGenerally` with a signature:
+ * To validate specific patches with default set of validating functions
+ * (like `validatePatches` but with predefined arrays of functions):
  * validatePatchesGenerally :: Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> [Patch] -> Map PatchPath PatchErrors
  *
- * Or write a custom function, that have a signature:
- * :: Action -> Project -> Map PatchPath DeducedPinTypes -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+ * To validate all local patches with default set of validating functions:
+ * validateLocalPatches :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
  *
- * Nothings will be omitted from errors, if there was an error.
- * Justs will be added into errors.
- * All other Patches, that was not mentioned in the result, will be left
- * without any changes in the Error state.
+ *To validate all patches (including local and library) with default set:
+ * validateAllPatches :: Project -> Map PatchPath DeducedPinTypes -> Nullable PatchPath -> Map PatchPath PatchErrors -> Map PatchPath PatchErrors
+ *
+ * Do not forget to use `set*Policy` function!
  */
 const shortValidators = {
-  // Exception, we have to validate whole local project
+  // Exceptions from general validation pipeline
+
+  // We have to validate all local patches,
+  // cause some other patches could have dead referece errors and etc
   [PAT.PATCH_ADD]: (_, project, deducedPinTypes, prevErrors) =>
-    R.compose(
-      validatePatchesGenerally(project, deducedPinTypes, prevErrors),
-      XP.listLocalPatches
-    )(project),
+    R.compose(setAssocPolicy, validateLocalPatches)(
+      project,
+      deducedPinTypes,
+      null,
+      prevErrors
+    ),
+  // We have to validate all local patches,
+  // cause only local patch could be renamed
+  [PAT.PATCH_RENAME]: (_, project, deducedPinTypes, prevErrors) =>
+    R.compose(setAssocPolicy, validateLocalPatches)(
+      project,
+      deducedPinTypes,
+      null,
+      prevErrors
+    ),
+
+  // Optimizations
 
   // Check only for valid variadics
-  [PAT.BULK_MOVE_NODES_AND_COMMENTS]: validatePatchByAction(
-    [getVariadicMarkersErrorMap],
-    [],
-    []
+  [PAT.BULK_MOVE_NODES_AND_COMMENTS]: R.compose(
+    setMergePolicy,
+    validateChangedPatch([getVariadicMarkersErrorMap], [], [])
   ),
 
   // When library installed we have to check all patches inside installed library
@@ -164,7 +199,10 @@ const shortValidators = {
       XP.listPatches
     )(project);
 
-    return R.merge(newErrorsForPrevivouslyErroredPatches, libErrors);
+    return R.compose(setMergePolicy, R.merge)(
+      newErrorsForPrevivouslyErroredPatches,
+      libErrors
+    );
   },
 };
 
@@ -176,7 +214,7 @@ const shortValidators = {
 
 // Checks shall we need to run any validations in this change or not
 // :: Action -> Project -> Boolean
-export const shallValidate = callFnIfExist(predicates, R.T);
+export const shallValidate = callFnIfExist(shouldValidate, R.T);
 
 // Validates Project
 // If there is a short validator for occured action it will run this validation
