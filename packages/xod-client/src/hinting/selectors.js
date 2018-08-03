@@ -18,25 +18,29 @@ export const getErrors = R.compose(R.prop('errors'), getHintingState);
 
 // :: PatchPath -> NodeId -> PatchPath -> Map PatchPath PatchErrors -> [Error]
 export const getNodeErrors = R.curry((patchPath, nodeId, nodeType, errors) =>
-  R.converge(R.concat, [
-    // Get errors for the specified Node
-    // :: [Error]
-    getAllErrorsForNode(patchPath, nodeId),
-    // Get all errors for the Patch of specified Node
-    // :: [Error]
-    getAllErrorsForPatch(nodeType),
-  ])(errors)
+  R.compose(
+    R.uniq,
+    R.converge(R.concat, [
+      // Get errors for the specified Node
+      // :: [Error]
+      getAllErrorsForNode(patchPath, nodeId),
+      // Get all errors for the Patch of specified Node
+      // :: [Error]
+      getAllErrorsForPatch(nodeType),
+    ])
+  )(errors)
 );
 
 // :: PatchPath -> LinkId -> Map PatchPath PatchErrors -> [Error]
-export const getLinkErrors = getAllErrorsForLink;
+export const getLinkErrors = R.compose(R.uniq, getAllErrorsForLink);
 
 // :: PatchPath -> Map PatchPath PatchErrors -> [Error]
-export const getPatchErrors = getAllErrorsForPatch;
+export const getPatchErrors = R.compose(R.uniq, getAllErrorsForPatch);
 
 // :: PatchPath -> NodeId -> PinKey -> Map PatchPath PatchErrors -> [Error]
 export const getPinErrors = R.curry((patchPath, nodeId, pinKey, errors) =>
   R.compose(
+    R.uniq,
     foldMaybe([], R.identity),
     maybePath([patchPath, 'nodes', nodeId, 'pins', pinKey, 'errors'])
   )(errors)
